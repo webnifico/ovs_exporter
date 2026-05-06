@@ -17,6 +17,10 @@ package ovs_exporter
 import (
 	"fmt"
 	_ "net/http/pprof"
+	"os/exec"
+	"regexp"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -159,6 +163,26 @@ var (
 		prometheus.BuildFQName(namespace, "", "dp_masks_hit_ratio"),
 		"The average number of masks visited per packet. It is the ration between hit and total number of packets processed by a datapath.",
 		[]string{"system_id", "datapath"}, nil,
+	)
+	upcallFlows = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "", "upcall_flows"),
+		"Flow counters reported by upcall/show.",
+		[]string{"system_id", "component", "datapath", "kind"}, nil,
+	)
+	upcallDumpDurationMs = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "", "upcall_dump_duration_ms"),
+		"The duration in milliseconds of upcall flow dump.",
+		[]string{"system_id", "component", "datapath"}, nil,
+	)
+	upcallUfidEnabled = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "", "upcall_ufid_enabled"),
+		"Whether UFID is enabled in upcall/show output (1=true, 0=false).",
+		[]string{"system_id", "component", "datapath"}, nil,
+	)
+	upcallHandlerKeys = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "", "upcall_handler_keys"),
+		"The number of keys assigned to each upcall handler.",
+		[]string{"system_id", "component", "datapath", "handler"}, nil,
 	)
 	// OVS Interface
 	// Reference: http://www.openvswitch.org/support/dist-docs/ovs-vswitchd.conf.db.5.html
@@ -339,6 +363,24 @@ type Options struct {
 	Logger  log.Logger
 }
 
+type upcallMetrics struct {
+	datapath       string
+	flowsCurrent   float64
+	flowsAvg       float64
+	flowsMax       float64
+	flowsLimit     float64
+	dumpDurationMs float64
+	ufidEnabled    float64
+	handlerKeys    map[string]float64
+}
+
+var (
+	upcallFlowFieldsRegex   = regexp.MustCompile(`\((current|avg|max|limit)\s+([0-9]+)\)`)
+	upcallDumpDurationRegex = regexp.MustCompile(`^dump duration\s*:\s*([0-9]+)ms$`)
+	upcallUfidRegex         = regexp.MustCompile(`^ufid enabled\s*:\s*(true|false)$`)
+	upcallHandlerRegex      = regexp.MustCompile(`^([0-9]+):\s+\(keys\s+([0-9]+)\)$`)
+)
+
 // NewLogger returns an instance of logger.
 func NewLogger(logLevel string) (log.Logger, error) {
 	allowedLogLevel := &promlog.AllowedLevel{}
@@ -420,6 +462,10 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 	ch <- dpMasksTotal
 	ch <- dpMasksHitRatio
 	ch <- dpLookupsLost
+	ch <- upcallFlows
+	ch <- upcallDumpDurationMs
+	ch <- upcallUfidEnabled
+	ch <- upcallHandlerKeys
 	ch <- interfaceMain
 	ch <- interfaceAdminState
 	ch <- interfaceLinkState
@@ -898,6 +944,93 @@ func (e *Exporter) GatherMetrics() {
 					"system_id", e.Client.System.ID,
 				)
 			}
+			if cmds["upcall/show"] && (component == "vswitchd-service") {
+				level.Debug(e.logger).Log(
+					"msg", "GatherMetrics() calls getAppUpcallMetrics()",
+					"component", component,
+					"system_id", e.Client.System.ID,
+				)
+				if metrics, err := e.getAppUpcallMetrics(component); err != nil {
+					level.Error(e.logger).Log(
+						"msg", "getAppUpcallMetrics() failed",
+						"component", component,
+						"system_id", e.Client.System.ID,
+						"error", err.Error(),
+					)
+					e.IncrementErrorCounter()
+				} else {
+					for _, metric := range metrics {
+						e.metrics = append(e.metrics, prometheus.MustNewConstMetric(
+							upcallFlows,
+							prometheus.GaugeValue,
+							metric.flowsCurrent,
+							e.Client.System.ID,
+							component,
+							metric.datapath,
+							"current",
+						))
+						e.metrics = append(e.metrics, prometheus.MustNewConstMetric(
+							upcallFlows,
+							prometheus.GaugeValue,
+							metric.flowsAvg,
+							e.Client.System.ID,
+							component,
+							metric.datapath,
+							"avg",
+						))
+						e.metrics = append(e.metrics, prometheus.MustNewConstMetric(
+							upcallFlows,
+							prometheus.GaugeValue,
+							metric.flowsMax,
+							e.Client.System.ID,
+							component,
+							metric.datapath,
+							"max",
+						))
+						e.metrics = append(e.metrics, prometheus.MustNewConstMetric(
+							upcallFlows,
+							prometheus.GaugeValue,
+							metric.flowsLimit,
+							e.Client.System.ID,
+							component,
+							metric.datapath,
+							"limit",
+						))
+						e.metrics = append(e.metrics, prometheus.MustNewConstMetric(
+							upcallDumpDurationMs,
+							prometheus.GaugeValue,
+							metric.dumpDurationMs,
+							e.Client.System.ID,
+							component,
+							metric.datapath,
+						))
+						e.metrics = append(e.metrics, prometheus.MustNewConstMetric(
+							upcallUfidEnabled,
+							prometheus.GaugeValue,
+							metric.ufidEnabled,
+							e.Client.System.ID,
+							component,
+							metric.datapath,
+						))
+						for handler, keys := range metric.handlerKeys {
+							e.metrics = append(e.metrics, prometheus.MustNewConstMetric(
+								upcallHandlerKeys,
+								prometheus.GaugeValue,
+								keys,
+								e.Client.System.ID,
+								component,
+								metric.datapath,
+								handler,
+							))
+						}
+					}
+				}
+				level.Debug(e.logger).Log(
+					"msg", "GatherMetrics() completed getAppUpcallMetrics()",
+					"component", component,
+					"system_id", e.Client.System.ID,
+				)
+			}
 		}
 	}
 
@@ -1335,4 +1468,97 @@ func GetExporterName() string {
 // SetPollInterval sets exporter's polling interval.
 func (e *Exporter) SetPollInterval(i int64) {
 	e.pollInterval = i
+}
+
+func (e *Exporter) getAppUpcallMetrics(component string) ([]*upcallMetrics, error) {
+	var socket string
+	switch component {
+	case "vswitchd-service":
+		socket = e.Client.Service.Vswitchd.Socket.Control
+	default:
+		return nil, fmt.Errorf("the '%s' component is unsupported for '%s'", component, "upcall/show")
+	}
+
+	socket = strings.TrimPrefix(socket, "unix:")
+	output, err := exec.Command("ovs-appctl", "-t", socket, "upcall/show").CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("the '%s' command failed for %s: %s: %s", "upcall/show", component, err, strings.TrimSpace(string(output)))
+	}
+	return parseUpcallShowMetrics(string(output))
+}
+
+func parseUpcallShowMetrics(output string) ([]*upcallMetrics, error) {
+	upcalls := []*upcallMetrics{}
+	var current *upcallMetrics
+
+	lines := strings.Split(strings.Trim(output, "\""), "\n")
+	for _, rawLine := range lines {
+		line := strings.TrimSpace(rawLine)
+		if line == "" {
+			continue
+		}
+
+		if strings.HasSuffix(line, ":") {
+			current = &upcallMetrics{
+				datapath:    strings.TrimSuffix(line, ":"),
+				handlerKeys: make(map[string]float64),
+			}
+			upcalls = append(upcalls, current)
+			continue
+		}
+		if current == nil {
+			continue
+		}
+
+		if strings.HasPrefix(line, "flows") {
+			matches := upcallFlowFieldsRegex.FindAllStringSubmatch(line, -1)
+			for _, match := range matches {
+				if len(match) != 3 {
+					continue
+				}
+				value, err := strconv.ParseFloat(match[2], 64)
+				if err != nil {
+					continue
+				}
+				switch match[1] {
+				case "current":
+					current.flowsCurrent = value
+				case "avg":
+					current.flowsAvg = value
+				case "max":
+					current.flowsMax = value
+				case "limit":
+					current.flowsLimit = value
+				}
+			}
+			continue
+		}
+
+		if matches := upcallDumpDurationRegex.FindStringSubmatch(line); len(matches) == 2 {
+			if value, err := strconv.ParseFloat(matches[1], 64); err == nil {
+				current.dumpDurationMs = value
+			}
+			continue
+		}
+
+		if matches := upcallUfidRegex.FindStringSubmatch(line); len(matches) == 2 {
+			if matches[1] == "true" {
+				current.ufidEnabled = 1
+			} else {
+				current.ufidEnabled = 0
+			}
+			continue
+		}
+
+		if matches := upcallHandlerRegex.FindStringSubmatch(line); len(matches) == 3 {
+			if keys, err := strconv.ParseFloat(matches[2], 64); err == nil {
+				current.handlerKeys[matches[1]] = keys
+			}
+		}
+	}
+
+	if len(upcalls) == 0 {
+		return upcalls, fmt.Errorf("the '%s' command returned no parseable data", "upcall/show")
+	}
+	return upcalls, nil
 }
