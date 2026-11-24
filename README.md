@@ -56,6 +56,12 @@ $ curl localhost:9475/metrics | grep ovn
 ovs_up 1
 ```
 
+## Metrics listener
+
+The default listen address is `127.0.0.1:9475`. Scrapes are not authenticated. Binding any other address makes interface metadata reachable by every host that can open that port, so put authentication or a firewall in front of a non-local scrape. The process logs a warning when the listen address is not loopback.
+
+`options`, `status`, and `external_ids` are published only for an allow-list of operational keys. Keys that name a secret, including `psk`, `password`, and `private_key`, are never copied into labels.
+
 ## Flags
 
 ```bash
