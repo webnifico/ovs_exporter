@@ -31,7 +31,7 @@ func main() {
 	var serviceOvnControllerFileLogPath string
 	var serviceOvnControllerFilePidPath string
 
-	flag.StringVar(&listenAddress, "web.listen-address", ":9475", "Address to listen on for web interface and telemetry.")
+	flag.StringVar(&listenAddress, "web.listen-address", ovs.DefaultListenAddress, "Address to listen on for web interface and telemetry. Defaults to loopback because scrapes are not authenticated.")
 	flag.StringVar(&metricsPath, "web.telemetry-path", "/metrics", "Path under which to expose metrics.")
 	flag.IntVar(&pollTimeout, "ovs.timeout", 2, "Timeout on JSON-RPC requests to OVS.")
 	flag.IntVar(&pollInterval, "ovs.poll-interval", 15, "The minimum interval (in seconds) between collections from OVS server.")
@@ -130,6 +130,12 @@ func main() {
              </html>`))
 	})
 
+	if !ovs.ListenAddressIsLoopback(listenAddress) {
+		level.Warn(logger).Log(
+			"msg", "metrics listener is not bound to loopback; require authentication or a firewall before exposing it",
+			"listen_on", listenAddress,
+		)
+	}
 	level.Info(logger).Log("listen_on ", listenAddress)
 	if err := http.ListenAndServe(listenAddress, nil); err != nil {
 		level.Error(logger).Log(

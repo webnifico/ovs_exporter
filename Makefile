@@ -70,6 +70,7 @@ deploy:
 
 qtest:
 	@./bin/$(BUILD_OS)-$(BUILD_ARCH)/$(BINARY) -version
+	@# 0.0.0.0 is an explicit non-local bind for host debugging. Do not expose it without authentication or a firewall.
 	@sudo ./bin/$(BUILD_OS)-$(BUILD_ARCH)/$(BINARY) -web.listen-address 0.0.0.0:5000 -log.level debug -ovs.poll-interval 5
 
 dist: all

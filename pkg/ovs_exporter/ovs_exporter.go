@@ -1292,39 +1292,9 @@ func (e *Exporter) GatherMetrics() {
 				e.Client.System.ID,
 				intf.UUID,
 			))
-			for key, value := range intf.Status {
-				e.metrics = append(e.metrics, prometheus.MustNewConstMetric(
-					interfaceStatusKeyValuePair,
-					prometheus.GaugeValue,
-					1,
-					e.Client.System.ID,
-					intf.UUID,
-					key,
-					value,
-				))
-			}
-			for key, value := range intf.Options {
-				e.metrics = append(e.metrics, prometheus.MustNewConstMetric(
-					interfaceOptionsKeyValuePair,
-					prometheus.GaugeValue,
-					1,
-					e.Client.System.ID,
-					intf.UUID,
-					key,
-					value,
-				))
-			}
-			for key, value := range intf.ExternalIDs {
-				e.metrics = append(e.metrics, prometheus.MustNewConstMetric(
-					interfaceExternalIdKeyValuePair,
-					prometheus.GaugeValue,
-					1,
-					e.Client.System.ID,
-					intf.UUID,
-					key,
-					value,
-				))
-			}
+			e.appendInterfaceMapMetric(interfaceStatusKeyValuePair, e.Client.System.ID, intf.UUID, interfaceAttributeStatus, intf.Status)
+			e.appendInterfaceMapMetric(interfaceOptionsKeyValuePair, e.Client.System.ID, intf.UUID, interfaceAttributeOptions, intf.Options)
+			e.appendInterfaceMapMetric(interfaceExternalIdKeyValuePair, e.Client.System.ID, intf.UUID, interfaceAttributeExternalIDs, intf.ExternalIDs)
 		}
 	}
 
